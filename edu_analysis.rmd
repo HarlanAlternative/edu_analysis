@@ -1,0 +1,281 @@
+---
+title: "education_analysis"
+author: "HaoranLi"
+date: "2026-03-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction
+
+This study examines:
+
+1. What parenting styles are reported by urban Chinese parents?
+2. What is the relationship between parenting styles and parent-child relationship quality?
+
+---
+
+# 2. Setup
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(psych)
+library(GPArotation)
+library(broom)
+library(ggplot2)
+library(corrplot)
+library(lavaan)
+library(semPlot)
+
+```
+
+# 3.Data import
+```{r}
+df <- read_excel("SPSS_data.xlsx")
+df <- df %>% rename_with(trimws)
+```
+
+# 4. Data Preprocessing
+## 4.1 Define Items
+```{r}
+ps_items <- paste0("PS-Q", 1:24)
+pcr_items <- paste0("PCR-Q", 1:30)
+
+ps_reverse <- paste0("PS-Q", 16:24)
+pcr_reverse <- c("PCR-Q2","PCR-Q4","PCR-Q6","PCR-Q7","PCR-Q12","PCR-Q14","PCR-Q17","PCR-Q19","PCR-Q21","PCR-Q23","PCR-Q24","PCR-Q25")
+```
+
+## 4.2 Reverse Coding
+```{r}
+df2 <- df
+
+df2[ps_reverse] <- lapply(df2[ps_reverse], function(x) 6 - x)
+df2[pcr_reverse] <- lapply(df2[pcr_reverse], function(x) 6 - x)
+```
+
+## 4.3 Scale Scores
+```{r}
+df2 <- df2 %>%
+  mutate(
+    PS_score = rowMeans(select(., all_of(ps_items)), na.rm = TRUE),
+    PCR_score = rowMeans(select(., all_of(pcr_items)), na.rm = TRUE)
+  )
+```
+
+# 5. PCA Analysis
+## 5.1 Parenting Style
+```{r}
+ps_data <- df2 %>% select(all_of(ps_items)) %>% na.omit()
+
+ps_pca <- principal(ps_data, nfactors = 3, rotate = "varimax", scores = TRUE)
+ps_pca
+print(ps_pca$loadings, cutoff = 0.3)
+```
+## 5.2 Parent-Child Relationship
+```{r}
+pcr_data <- df2 %>% select(all_of(pcr_items)) %>% na.omit()
+
+pcr_pca <- principal(pcr_data, nfactors = 3, rotate = "varimax", scores = TRUE)
+pcr_pca
+print(pcr_pca$loadings, cutoff = 0.3)
+```
+
+# 6. Factor Scores
+```{r}
+ps_scores <- as.data.frame(ps_pca$scores)
+colnames(ps_scores) <- c("PS_authoritative","PS_authoritarian","PS_permissive")
+
+pcr_scores <- as.data.frame(pcr_pca$scores)
+colnames(pcr_scores) <- c("PCR_closeness","PCR_dependency","PCR_conflict")
+
+complete_index <- df2 %>%
+  select(all_of(c(ps_items, pcr_items))) %>%
+  complete.cases()
+
+analysis_df <- bind_cols(
+  df2[complete_index, ],
+  ps_scores,
+  pcr_scores
+)
+```
+
+# 7. Descriptive Statistics
+```{r}
+describe(analysis_df %>%
+  select(PS_authoritative, PS_authoritarian, PS_permissive,
+         PCR_closeness, PCR_dependency, PCR_conflict))
+```
+
+# 8. Correlation Analysis
+```{r}
+corr_data <- analysis_df %>%
+  select(PS_authoritative, PS_authoritarian, PS_permissive,
+         PCR_closeness, PCR_dependency, PCR_conflict)
+
+corr_mat <- cor(corr_data, use = "pairwise.complete.obs")
+corr_mat
+```
+```{r}
+corrplot(corr_mat, method = "color",
+         addCoef.col = "black",
+         tl.col = "black",
+         number.cex = 0.7)
+```
+
+# 9. Regression Analysis
+```{r}
+model_closeness <- lm(PCR_closeness ~ PS_authoritative + PS_authoritarian + PS_permissive, data = analysis_df)
+model_dependency <- lm(PCR_dependency ~ PS_authoritative + PS_authoritarian + PS_permissive, data = analysis_df)
+model_conflict <- lm(PCR_conflict ~ PS_authoritative + PS_authoritarian + PS_permissive, data = analysis_df)
+
+summary(model_closeness)
+summary(model_dependency)
+summary(model_conflict)
+```
+# 10. Standardized Regression
+```{r}
+analysis_df_std <- analysis_df %>%
+  mutate(across(everything(), scale))
+
+model_closeness_std <- lm(PCR_closeness ~ PS_authoritative + PS_authoritarian + PS_permissive, data = analysis_df_std)
+model_dependency_std <- lm(PCR_dependency ~ PS_authoritative + PS_authoritarian + PS_permissive, data = analysis_df_std)
+model_conflict_std <- lm(PCR_conflict ~ PS_authoritative + PS_authoritarian + PS_permissive, data = analysis_df_std)
+
+summary(model_closeness_std)
+summary(model_dependency_std)
+summary(model_conflict_std)
+```
+# 11. Mediation Analysis
+```{r}
+med_model <- '
+PCR_dependency ~ a*PS_authoritative
+PCR_closeness ~ cprime*PS_authoritative + b*PCR_dependency
+indirect := a*b
+direct := cprime
+total := cprime + (a*b)
+'
+
+fit_med <- sem(med_model, data = analysis_df, se = "bootstrap", bootstrap = 2000)
+summary(fit_med, standardized = TRUE, fit.measures = TRUE)
+```
+
+# 12. Path Model
+```{r}
+path_model <- '
+PCR_closeness ~ PS_authoritative + PS_authoritarian + PS_permissive
+PCR_dependency ~ PS_authoritative + PS_authoritarian + PS_permissive
+PCR_conflict ~ PS_authoritative + PS_authoritarian + PS_permissive
+'
+
+fit_path <- sem(path_model, data = analysis_df)
+summary(fit_path, standardized = TRUE)
+```
+```{r}
+semPaths(
+  fit_path,
+  what = "std",
+  layout = "tree",
+  edge.label.cex = 1,
+  residuals = FALSE,
+  intercepts = FALSE
+)
+```
+
+# 13. Conclusion
+	•	Parenting styles are significantly associated with parent-child relationship quality.
+	•	Authoritative parenting is positively related to closeness.
+	•	Authoritarian parenting is associated with conflict.
+	•	Permissive parenting shows mixed effects.
+	
+# 14. Limitations
+	•	Cross-sectional data
+	•	No causal inference
+	•	Possible unobserved confounders
+	
+	
+# Appendix
+## Random forest
+```{r}
+library(randomForest)
+
+rf_model <- randomForest(
+  PCR_closeness ~ PS_authoritative + PS_authoritarian + PS_permissive,
+  data = analysis_df,
+  importance = TRUE
+)
+
+rf_model
+importance(rf_model)
+
+varImpPlot(rf_model)
+```
+## XGboost
+```{r}
+library(xgboost)
+
+X <- as.matrix(analysis_df[, c("PS_authoritative","PS_authoritarian","PS_permissive")])
+y <- analysis_df$PCR_closeness
+
+dtrain <- xgb.DMatrix(data = X, label = y)
+
+xgb_model <- xgboost(
+  data = dtrain,
+  nrounds = 100,
+  objective = "reg:squarederror",
+  verbose = 0
+)
+
+importance_matrix <- xgb.importance(
+  feature_names = colnames(X),
+  model = xgb_model
+)
+
+print(importance_matrix)
+xgb.plot.importance(importance_matrix)
+```
+## Lasso
+```{r}
+library(glmnet)
+
+X <- as.matrix(analysis_df[, c("PS_authoritative","PS_authoritarian","PS_permissive")])
+y <- analysis_df$PCR_closeness
+
+lasso_model <- cv.glmnet(X, y, alpha = 1)
+
+plot(lasso_model)
+
+coef(lasso_model, s = "lambda.min")
+```
+## Classification
+```{r}
+analysis_df <- analysis_df %>%
+  mutate(
+    closeness_high = ifelse(PCR_closeness > median(PCR_closeness), 1, 0)
+  )
+
+rf_class <- randomForest(
+  as.factor(closeness_high) ~ PS_authoritative + PS_authoritarian + PS_permissive,
+  data = analysis_df
+)
+
+rf_class
+```
+
+
+## Explaination
+```{r warning=FALSE}
+library(iml)
+
+predictor <- Predictor$new(
+  rf_model,
+  data = analysis_df[, c("PS_authoritative","PS_authoritarian","PS_permissive")],
+  y = analysis_df$PCR_closeness
+)
+
+imp <- FeatureImp$new(predictor, loss = "mse")
+plot(imp)
+```
+
